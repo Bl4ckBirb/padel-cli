@@ -74,6 +74,25 @@ func (s *Server) handleRunStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mode := r.FormValue("mode")
+	if mode == "" {
+		mode = "dry-run"
+	}
+	var extraArgs []string
+	var modeLabel string
+	switch mode {
+	case "dry-run":
+		extraArgs = []string{"--ignore-release-window"}
+		modeLabel = "dry-run"
+	case "live-hunt":
+		// Real money path: scan all eligible dates +14 → +3, override dry_run.
+		extraArgs = []string{"--scan", "--ignore-release-window", "--live"}
+		modeLabel = "LIVE HUNT"
+	default:
+		http.Error(w, "unknown mode (want dry-run or live-hunt)", http.StatusBadRequest)
+		return
+	}
+
 	s.mu.Lock()
 	if s.currentRun != nil && !s.currentRun.isDone() {
 		s.mu.Unlock()
@@ -82,11 +101,11 @@ func (s *Server) handleRunStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	configPath := filepath.Join(s.ConfigDir, configName)
-	// Resolve up to working dir if not under config dir — same behaviour the CLI has.
 	if _, err := exec.LookPath(s.BinaryPath); err != nil {
-		// Tolerate: maybe BinaryPath is absolute. Let exec.Cmd surface any error.
+		// Tolerate: BinaryPath may be absolute. exec.Cmd surfaces any error itself.
 	}
-	cmd := exec.Command(s.BinaryPath, "auto-book", "--config", configPath, "--ignore-release-window")
+	args := append([]string{"auto-book", "--config", configPath}, extraArgs...)
+	cmd := exec.Command(s.BinaryPath, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		s.mu.Unlock()
@@ -114,7 +133,7 @@ func (s *Server) handleRunStart(w http.ResponseWriter, r *http.Request) {
 	go s.pumpRunOutput(run, cmd, stdout)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	fmt.Fprintf(w, `<div id="run-status">Started run <span class="mono">%s</span> using <span class="mono">%s</span>. Streaming…</div>`, run.id, configName)
+	fmt.Fprintf(w, `<div id="run-status">Started <strong>%s</strong> run <span class="mono">%s</span> using <span class="mono">%s</span>. Streaming…</div>`, modeLabel, run.id, configName)
 }
 
 func (s *Server) pumpRunOutput(run *runProcess, cmd *exec.Cmd, stdout io.ReadCloser) {

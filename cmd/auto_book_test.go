@@ -458,6 +458,32 @@ func TestWaitForReleaseWindow_AfterWindow_Skips(t *testing.T) {
 	}
 }
 
+func TestScanTargetDates_DescendingFromMaxToMinLead(t *testing.T) {
+	cfg := defaultAutoBookConfig()
+	loc := mustLocation(t, autoBookTimezone)
+	now := time.Date(2026, 5, 23, 12, 0, 0, 0, loc)
+
+	dates := scanTargetDates(now, loc, cfg)
+	// days_in_advance = 14, min_scan_offset = 3 → 12 dates (+14 down to +3 inclusive)
+	if len(dates) != 12 {
+		t.Fatalf("dates count = %d, want 12", len(dates))
+	}
+	expectedFirst := time.Date(2026, 6, 6, 0, 0, 0, 0, loc) // +14
+	if !dates[0].Equal(expectedFirst) {
+		t.Fatalf("first date = %s, want %s", dates[0].Format("2006-01-02"), expectedFirst.Format("2006-01-02"))
+	}
+	expectedLast := time.Date(2026, 5, 26, 0, 0, 0, 0, loc) // +3
+	if !dates[len(dates)-1].Equal(expectedLast) {
+		t.Fatalf("last date = %s, want %s", dates[len(dates)-1].Format("2006-01-02"), expectedLast.Format("2006-01-02"))
+	}
+	for i := 1; i < len(dates); i++ {
+		if !dates[i-1].After(dates[i]) {
+			t.Fatalf("dates not descending: dates[%d]=%s not after dates[%d]=%s",
+				i-1, dates[i-1].Format("2006-01-02"), i, dates[i].Format("2006-01-02"))
+		}
+	}
+}
+
 func mustLocation(t *testing.T, name string) *time.Location {
 	t.Helper()
 	loc, err := time.LoadLocation(name)

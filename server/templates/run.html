@@ -5,11 +5,30 @@
   Output streams below as the run progresses. Only one run at a time.
 </p>
 
+<h3 style="margin-top: 24px;">Dry-run (no money moves)</h3>
 <div class="row">
   {{range .Configs}}
   <form method="post" action="/run/start" hx-post="/run/start" hx-target="#run-status" hx-swap="innerHTML" style="display: inline;">
     <input type="hidden" name="config" value="{{.}}">
-    <button type="submit">Dry-run {{.}}</button>
+    <input type="hidden" name="mode" value="dry-run">
+    <button type="submit" class="secondary">Dry-run {{.}}</button>
+  </form>
+  {{end}}
+</div>
+
+<h3 style="margin-top: 24px; color: var(--red);">🚨 Live hunt — real money</h3>
+<p style="color: var(--muted); font-size: 13px;">
+  Scans target dates from <code>today+14</code> backwards to <code>today+3</code> (72h floor),
+  one attempt per eligible date, stops on first booking. Caps at 1/day, 3/week. The booking
+  will be <strong>private</strong> — never published. You'll have 48h to invite players or
+  free-cancel.
+</p>
+<div class="row">
+  {{range .Configs}}
+  <form method="post" action="/run/start" hx-post="/run/start" hx-target="#run-status" hx-swap="innerHTML" hx-confirm="LIVE booking — this will attempt a real charge against your IPA wallet for one slot from {{.}}. Continue?" style="display: inline;">
+    <input type="hidden" name="config" value="{{.}}">
+    <input type="hidden" name="mode" value="live-hunt">
+    <button type="submit" style="background: var(--red);">🚨 Hunt {{.}} (live)</button>
   </form>
   {{end}}
   <span style="flex: 1;"></span>

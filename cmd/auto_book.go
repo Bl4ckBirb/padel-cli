@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"math/rand"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +16,8 @@ import (
 
 type autoBookRunOptions struct {
 	IgnoreReleaseWindow bool
+	Scan                bool
+	Live                bool
 	Now                 func() time.Time
 	Sleep               func(time.Duration)
 }
@@ -31,6 +32,8 @@ type autoBookAudit struct {
 func autoBookCmd() *cobra.Command {
 	var configPath string
 	var ignoreReleaseWindow bool
+	var scan bool
+	var live bool
 
 	cmd := &cobra.Command{
 		Use:   "auto-book",
@@ -42,6 +45,8 @@ func autoBookCmd() *cobra.Command {
 			}
 			return runAutoBook(cmd.Context(), cfg, autoBookRunOptions{
 				IgnoreReleaseWindow: ignoreReleaseWindow,
+				Scan:                scan,
+				Live:                live,
 				Now:                 time.Now,
 				Sleep:               time.Sleep,
 			})
@@ -49,7 +54,9 @@ func autoBookCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&configPath, "config", "", "Auto-book YAML config")
-	cmd.Flags().BoolVar(&ignoreReleaseWindow, "ignore-release-window", false, "Allow a dry-run outside 18:30-18:35 for local testing")
+	cmd.Flags().BoolVar(&ignoreReleaseWindow, "ignore-release-window", false, "Skip waiting for the 18:30-18:35 release window")
+	cmd.Flags().BoolVar(&scan, "scan", false, "Iterate target dates from today+days_in_advance down to the 72h floor (stops on first booking)")
+	cmd.Flags().BoolVar(&live, "live", false, "Force dry_run=false regardless of config (real money will move)")
 	return cmd
 }
 
@@ -60,13 +67,20 @@ func runAutoBook(ctx context.Context, cfg AutoBookConfig, opts autoBookRunOption
 	if opts.Sleep == nil {
 		opts.Sleep = time.Sleep
 	}
-	// --ignore-release-window is now allowed even when dry_run is false. The
+	// --ignore-release-window is allowed even when dry_run is false. The
 	// release window is the autonomous schedule signal — when the bot fires
 	// itself at 18:30 Sydney it must respect it. But a manual operator who
 	// passes the flag is opportunistically searching for slots that came back
 	// onto the market via cancellations between release windows. All other
 	// safety guards (72h lead time, caps, venue verify, payment-challenge
 	// abort, forbidden-publish test) still apply.
+
+	// --live overrides dry_run=true in the config. Belt-and-braces so a live
+	// booking from the dashboard can't accidentally trigger from a config
+	// that explicitly says dry_run: true.
+	if opts.Live {
+		cfg.DryRun = false
+	}
 
 	loc, err := time.LoadLocation(cfg.Timezone)
 	if err != nil {
@@ -81,13 +95,10 @@ func runAutoBook(ctx context.Context, cfg AutoBookConfig, opts autoBookRunOption
 	defer db.Close()
 
 	now := opts.Now().In(loc)
-	targetDate := autoBookTargetDate(now, loc, cfg.Release.DaysInAdvance)
-	targetDateStr := targetDate.Format("2006-01-02")
 	audit := autoBookAudit{
-		db:         db,
-		runID:      newBookingID(),
-		targetDate: targetDateStr,
-		venueID:    cfg.Venue.ID,
+		db:      db,
+		runID:   newBookingID(),
+		venueID: cfg.Venue.ID,
 	}
 
 	notifier, notifierErr := newNotifier(cfg.Notifications)
@@ -96,14 +107,34 @@ func runAutoBook(ctx context.Context, cfg AutoBookConfig, opts autoBookRunOption
 		return notifierErr
 	}
 
-	audit.log("info", "run_started", fmt.Sprintf("target date %s from local date %s", targetDateStr, now.Format("2006-01-02")), "", map[string]any{
-		"dry_run": cfg.DryRun,
-	})
-
-	if !isAllowedAutoBookWeekday(targetDate, cfg.Booking.AllowedWeekdays) {
-		audit.log("info", "skipped_weekday", fmt.Sprintf("%s is %s, outside Monday-Thursday rule", targetDateStr, targetDate.Weekday()), "", nil)
+	// Compute target dates. Single-date mode → just today+days_in_advance.
+	// Scan mode → today+days_in_advance descending down to the 72h floor.
+	var targetDates []time.Time
+	if opts.Scan {
+		targetDates = scanTargetDates(now, loc, cfg)
+	} else {
+		targetDates = []time.Time{autoBookTargetDate(now, loc, cfg.Release.DaysInAdvance)}
+	}
+	if len(targetDates) == 0 {
+		audit.log("info", "no_target_dates", "scan range produced no dates", "", nil)
 		return nil
 	}
+
+	startMsg := fmt.Sprintf("first target %s from local date %s", targetDates[0].Format("2006-01-02"), now.Format("2006-01-02"))
+	if opts.Scan {
+		startMsg = fmt.Sprintf("scan %d dates %s ... %s from local date %s",
+			len(targetDates),
+			targetDates[0].Format("2006-01-02"),
+			targetDates[len(targetDates)-1].Format("2006-01-02"),
+			now.Format("2006-01-02"),
+		)
+	}
+	audit.targetDate = targetDates[0].Format("2006-01-02")
+	audit.log("info", "run_started", startMsg, "", map[string]any{
+		"dry_run": cfg.DryRun,
+		"scan":    opts.Scan,
+		"live":    opts.Live,
+	})
 
 	if !opts.IgnoreReleaseWindow {
 		nowAfter, decision := waitForReleaseWindow(now, cfg, loc, opts.Sleep, opts.Now, audit)
@@ -112,7 +143,7 @@ func runAutoBook(ctx context.Context, cfg AutoBookConfig, opts autoBookRunOption
 			return nil
 		}
 	} else {
-		audit.log("info", "release_window_bypass", "manual run — searching for any available slot regardless of release window", "", nil)
+		audit.log("info", "release_window_bypass", "manual run — searching regardless of release window", "", nil)
 	}
 
 	creds, err := loadAutoBookCredentials(ctx)
@@ -132,7 +163,9 @@ func runAutoBook(ctx context.Context, cfg AutoBookConfig, opts autoBookRunOption
 		return stopAndNotify(ctx, notifier, audit, "booking_sync_failed", "Auto-book stopped: could not sync existing Playtomic bookings", err)
 	}
 
-	if err := enforceBookingCaps(db, cfg, targetDate, loc, audit); err != nil {
+	// Caps check uses today as the reference date — it counts all bookings
+	// in the same week regardless of which target date we pick from the scan.
+	if err := enforceBookingCaps(db, cfg, targetDates[0], loc, audit); err != nil {
 		audit.log("info", "skipped_booking_cap", err.Error(), "", nil)
 		return nil
 	}
@@ -143,71 +176,133 @@ func runAutoBook(ctx context.Context, cfg AutoBookConfig, opts autoBookRunOption
 	}
 	audit.log("info", "calendar_checked", fmt.Sprintf("loaded %d calendar events", len(calendarEvents)), "", nil)
 
-	deadline := releaseWindowEnd(now, cfg, loc)
-	attempt := 0
-	for {
-		attempt++
-		candidate, candidates, err := findAutoBookCandidate(ctx, cfg, tenant, venueTZ, resources, targetDate, calendarEvents, opts.Now().In(loc))
+	// Iterate target dates (descending in scan mode; just one in single-date mode).
+	// Stop on first successful booking or hard error. Continue past "no candidate".
+	for _, targetDate := range targetDates {
+		targetDateStr := targetDate.Format("2006-01-02")
+		audit.targetDate = targetDateStr
+
+		if !isAllowedAutoBookWeekday(targetDate, cfg.Booking.AllowedWeekdays) {
+			audit.log("info", "skipped_weekday", fmt.Sprintf("%s is %s, not in profile weekdays", targetDateStr, targetDate.Weekday()), "", nil)
+			continue
+		}
+
+		result, err := attemptBookForDate(ctx, cfg, db, creds, tenant, venueTZ, resources, calendarEvents, targetDate, loc, opts.Now().In(loc), notifier, audit)
 		if err != nil {
-			return stopAndNotify(ctx, notifier, audit, "availability_failed", "Auto-book stopped: availability lookup failed", err)
+			return stopAndNotify(ctx, notifier, audit, "booking_failed", "Auto-book stopped: checkout did not complete safely", err)
 		}
-		audit.log("info", "availability_checked", fmt.Sprintf("attempt %d found %d eligible slots", attempt, len(candidates)), "", map[string]any{
-			"attempt": attempt,
-		})
-
-		if candidate != nil {
-			slot := *candidate
-			audit.log("info", "candidate_selected", fmt.Sprintf("selected %s %dmin on %s", slot.Time, slot.Duration, slot.Court), slot.Time, map[string]any{
-				"court":       slot.Court,
-				"resource_id": slot.ResourceID,
-				"duration":    slot.Duration,
-				"price":       slot.Price,
-			})
-			slotStart, _, _ := availabilitySlotInterval(slot, targetDateStr, loc, slot.Duration)
-			cancelDeadline := slotStart.Add(-autoBookFreeCancelMargin)
-			cancelDeadlineLabel := cancelDeadline.Format("Mon 2 Jan 15:04 MST")
-			executed, err := executeUnlessDryRun(ctx, cfg.DryRun, func(ctx context.Context) error {
-				audit.log("info", "booking_attempt_started", fmt.Sprintf("booking %s %s %dmin", targetDateStr, slot.Time, slot.Duration), slot.Time, nil)
-				booking, err := executeAutoBookBooking(ctx, cfg, creds, tenant, slot, targetDateStr, venueTZ)
-				if err != nil {
-					return err
-				}
-				if _, err := storage.AddBookingIfNotExists(db, booking); err != nil {
-					return fmt.Errorf("store confirmed booking: %w", err)
-				}
-				audit.log("info", "booking_confirmed", fmt.Sprintf("booked %s %s on %s; free-cancel until %s", tenant.TenantName, slot.Time, targetDateStr, cancelDeadlineLabel), slot.Time, map[string]any{
-					"booking_id":             booking.ID,
-					"cancel_deadline_local":  cancelDeadlineLabel,
-					"cancel_deadline_utc":    cancelDeadline.UTC().Format(time.RFC3339),
-				})
-				notifyBestEffort(ctx, notifier, audit, fmt.Sprintf("Padel booked: %s %s at %s (%s, %d min). Free-cancel until %s — match stays private; invite players or cancel before then.", targetDateStr, slot.Time, tenant.TenantName, slot.Court, slot.Duration, cancelDeadlineLabel))
-				return nil
-			})
-			if err != nil {
-				return stopAndNotify(ctx, notifier, audit, "booking_failed", "Auto-book stopped: checkout did not complete safely", err)
-			}
-			if !executed {
-				audit.log("info", "dry_run_booking_prevented", fmt.Sprintf("dry-run would book %s %s on %s; free-cancel would be until %s", tenant.TenantName, slot.Time, targetDateStr, cancelDeadlineLabel), slot.Time, map[string]any{
-					"cancel_deadline_local": cancelDeadlineLabel,
-				})
-				notifyBestEffort(ctx, notifier, audit, fmt.Sprintf("Padel dry-run: would book %s %s at %s (%s, %d min). Cancel deadline would be %s.", targetDateStr, slot.Time, tenant.TenantName, slot.Court, slot.Duration, cancelDeadlineLabel))
-			}
+		switch result {
+		case attemptResultBooked, attemptResultDryRunPrevented:
 			return nil
+		case attemptResultAvailabilityFailed:
+			return stopAndNotify(ctx, notifier, audit, "availability_failed", "Auto-book stopped: availability lookup failed", fmt.Errorf("see prior audit"))
+		case attemptResultNoCandidate:
+			// Continue to next date.
 		}
-
-		now = opts.Now().In(loc)
-		if opts.IgnoreReleaseWindow || !now.Before(deadline) {
-			audit.log("info", "no_slot_before_deadline", "no eligible slot found before retry deadline", "", nil)
-			return nil
-		}
-		delay := conservativePollingDelay(cfg, now, deadline)
-		if delay <= 0 {
-			audit.log("info", "no_slot_before_deadline", "retry deadline reached", "", nil)
-			return nil
-		}
-		audit.log("info", "retry_wait", fmt.Sprintf("waiting %s before next availability check", delay), "", nil)
-		opts.Sleep(delay)
 	}
+
+	if opts.Scan {
+		audit.log("info", "scan_no_slot_found", "no eligible slot found across the scanned date range", "", nil)
+	} else {
+		audit.log("info", "no_slot_found", "no eligible slot on the target date", "", nil)
+	}
+	return nil
+}
+
+type attemptResult int
+
+const (
+	attemptResultNoCandidate attemptResult = iota
+	attemptResultBooked
+	attemptResultDryRunPrevented
+	attemptResultAvailabilityFailed
+)
+
+func attemptBookForDate(
+	ctx context.Context,
+	cfg AutoBookConfig,
+	db *sql.DB,
+	creds *storage.Credentials,
+	tenant api.Tenant,
+	venueTZ string,
+	resources []api.Resource,
+	calendarEvents []CalendarEvent,
+	targetDate time.Time,
+	loc *time.Location,
+	now time.Time,
+	notifier Notifier,
+	audit autoBookAudit,
+) (attemptResult, error) {
+	targetDateStr := targetDate.Format("2006-01-02")
+
+	candidate, candidates, err := findAutoBookCandidate(ctx, cfg, tenant, venueTZ, resources, targetDate, calendarEvents, now)
+	if err != nil {
+		audit.log("error", "availability_failed", err.Error(), "", nil)
+		return attemptResultAvailabilityFailed, nil
+	}
+	audit.log("info", "availability_checked", fmt.Sprintf("date %s found %d eligible slots", targetDateStr, len(candidates)), "", nil)
+	if candidate == nil {
+		return attemptResultNoCandidate, nil
+	}
+
+	slot := *candidate
+	audit.log("info", "candidate_selected", fmt.Sprintf("selected %s %dmin on %s for %s", slot.Time, slot.Duration, slot.Court, targetDateStr), slot.Time, map[string]any{
+		"court":       slot.Court,
+		"resource_id": slot.ResourceID,
+		"duration":    slot.Duration,
+		"price":       slot.Price,
+	})
+	slotStart, _, _ := availabilitySlotInterval(slot, targetDateStr, loc, slot.Duration)
+	cancelDeadline := slotStart.Add(-autoBookFreeCancelMargin)
+	cancelDeadlineLabel := cancelDeadline.Format("Mon 2 Jan 15:04 MST")
+
+	executed, err := executeUnlessDryRun(ctx, cfg.DryRun, func(ctx context.Context) error {
+		audit.log("info", "booking_attempt_started", fmt.Sprintf("booking %s %s %dmin", targetDateStr, slot.Time, slot.Duration), slot.Time, nil)
+		booking, err := executeAutoBookBooking(ctx, cfg, creds, tenant, slot, targetDateStr, venueTZ)
+		if err != nil {
+			return err
+		}
+		if _, err := storage.AddBookingIfNotExists(db, booking); err != nil {
+			return fmt.Errorf("store confirmed booking: %w", err)
+		}
+		audit.log("info", "booking_confirmed", fmt.Sprintf("booked %s %s on %s; free-cancel until %s", tenant.TenantName, slot.Time, targetDateStr, cancelDeadlineLabel), slot.Time, map[string]any{
+			"booking_id":            booking.ID,
+			"cancel_deadline_local": cancelDeadlineLabel,
+			"cancel_deadline_utc":   cancelDeadline.UTC().Format(time.RFC3339),
+		})
+		notifyBestEffort(ctx, notifier, audit, fmt.Sprintf("Padel booked: %s %s at %s (%s, %d min). Free-cancel until %s — match stays private; invite players or cancel before then.", targetDateStr, slot.Time, tenant.TenantName, slot.Court, slot.Duration, cancelDeadlineLabel))
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if !executed {
+		audit.log("info", "dry_run_booking_prevented", fmt.Sprintf("dry-run would book %s %s on %s; free-cancel would be until %s", tenant.TenantName, slot.Time, targetDateStr, cancelDeadlineLabel), slot.Time, map[string]any{
+			"cancel_deadline_local": cancelDeadlineLabel,
+		})
+		notifyBestEffort(ctx, notifier, audit, fmt.Sprintf("Padel dry-run: would book %s %s at %s (%s, %d min). Cancel deadline would be %s.", targetDateStr, slot.Time, tenant.TenantName, slot.Court, slot.Duration, cancelDeadlineLabel))
+		return attemptResultDryRunPrevented, nil
+	}
+	return attemptResultBooked, nil
+}
+
+// scanTargetDates returns dates from today+days_in_advance descending to the
+// 72h floor (currently +3 days), in descending order. The per-slot 72h lead
+// check in filterAutoBookCandidates further trims same-day slots that fall
+// inside the 72h window.
+func scanTargetDates(now time.Time, loc *time.Location, cfg AutoBookConfig) []time.Time {
+	const minScanOffsetDays = 3 // 72h ceiling — slot-level check enforces exact hours
+	maxOffsetDays := cfg.Release.DaysInAdvance
+	if maxOffsetDays < minScanOffsetDays {
+		return nil
+	}
+	local := now.In(loc)
+	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	dates := make([]time.Time, 0, maxOffsetDays-minScanOffsetDays+1)
+	for offset := maxOffsetDays; offset >= minScanOffsetDays; offset-- {
+		dates = append(dates, today.AddDate(0, 0, offset))
+	}
+	return dates
 }
 
 func (a autoBookAudit) log(level, decision, message, slotTime string, metadata map[string]any) {
@@ -721,21 +816,3 @@ func unexpectedCheckoutState(payload map[string]any) error {
 	return nil
 }
 
-func conservativePollingDelay(cfg AutoBookConfig, now, deadline time.Time) time.Duration {
-	minSeconds := cfg.Polling.MinIntervalSeconds
-	maxSeconds := cfg.Polling.MaxIntervalSeconds
-	if maxSeconds < minSeconds {
-		maxSeconds = minSeconds
-	}
-	seconds := minSeconds
-	if maxSeconds > minSeconds {
-		source := rand.New(rand.NewSource(time.Now().UnixNano()))
-		seconds += source.Intn(maxSeconds - minSeconds + 1)
-	}
-	delay := time.Duration(seconds) * time.Second
-	remaining := deadline.Sub(now)
-	if delay > remaining {
-		delay = remaining
-	}
-	return delay
-}
