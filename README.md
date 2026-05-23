@@ -114,8 +114,12 @@ The validator refuses any config that widens beyond the profile bounds.
 
 ### Setup
 
+Configs live in `~/.config/padel/` alongside `credentials.json`, `venues.json`, and `bookings.db`. The dashboard (`padel serve`) and the CLI both look for them there.
+
 ```bash
-cp config.example.yaml config.yaml
+mkdir -p ~/.config/padel
+cp config.example.yaml ~/.config/padel/config.yaml       # weekday profile
+cp config.example.yaml ~/.config/padel/config.weekend.yaml  # then edit mode/window/durations
 
 # Confirm the Playtomic tenant id:
 padel clubs --near "Alexandria NSW" --json
@@ -124,7 +128,7 @@ padel clubs --near "Alexandria NSW" --json
 padel auth login --email you@example.com
 
 # Local dry-run test outside the release window
-padel auto-book --config config.yaml --ignore-release-window
+padel auto-book --config ~/.config/padel/config.yaml --ignore-release-window
 ```
 
 `dry_run: true` is the default — the first runs only log what would happen. Flip to `false` only after both dry-run output and `auto_book_audit` rows look correct.
