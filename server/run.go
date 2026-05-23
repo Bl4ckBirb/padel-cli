@@ -165,10 +165,15 @@ func (run *runProcess) isDone() bool {
 	return run.done
 }
 
-// ID and Profile are exported method-form accessors so html/template can read
-// the underlying fields safely without exposing the mutable internals.
+// ID, Profile, and Active are exported method-form accessors so html/template
+// can read the underlying fields safely without exposing the mutable internals.
 func (run *runProcess) ID() string      { return run.id }
 func (run *runProcess) Profile() string { return run.profile }
+func (run *runProcess) Active() bool {
+	run.mu.Lock()
+	defer run.mu.Unlock()
+	return !run.done
+}
 
 func (run *runProcess) subscribe() (history []string, ch chan string, done bool) {
 	run.mu.Lock()

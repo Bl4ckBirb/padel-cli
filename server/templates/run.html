@@ -32,28 +32,43 @@
 <script>
 (function() {
   const out = document.getElementById('run-output');
+  let activeStream = null;
   function append(line) {
     out.textContent += line + '\n';
     out.scrollTop = out.scrollHeight;
   }
   function connect() {
+    if (activeStream) {
+      activeStream.close();
+    }
     const es = new EventSource('/run/stream');
+    activeStream = es;
     es.onmessage = (ev) => append(ev.data);
     es.addEventListener('done', () => {
       append('— run finished —');
       es.close();
+      activeStream = null;
     });
     es.onerror = () => {
-      // Will retry automatically per the EventSource spec until close().
+      // The server returns 404 when there's no active run; EventSource would
+      // retry forever. Close so we don't spam the access log.
+      if (es.readyState === EventSource.CLOSED) {
+        activeStream = null;
+      } else {
+        es.close();
+        activeStream = null;
+      }
     };
   }
-  // Open the stream on page load and re-open after a fresh "Started run" reply.
+  // Only auto-connect if the server says a run is currently in flight.
+  {{if and .Latest .Latest.Active}}
   connect();
+  {{end}}
   document.body.addEventListener('htmx:afterRequest', (ev) => {
-    if (ev.detail.requestConfig && ev.detail.requestConfig.path === '/run/start') {
+    if (ev.detail.requestConfig && ev.detail.requestConfig.path === '/run/start' && ev.detail.successful) {
       out.textContent = '';
-      // Brief delay so the server has time to start the run + subscribe path is live.
-      setTimeout(connect, 100);
+      // Brief delay so the server has time to start the run + the subscribe path is live.
+      setTimeout(connect, 150);
     }
   });
 })();
