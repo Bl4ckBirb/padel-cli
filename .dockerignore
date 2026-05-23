@@ -1,0 +1,14 @@
+.git
+.github
+.idea
+.vscode
+.direnv
+result
+padel
+*.exe
+config.yaml
+config.weekend.yaml
+auth.toml
+credentials.json
+*.swp
+.DS_Store

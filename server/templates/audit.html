@@ -1,0 +1,63 @@
+{{define "content"}}
+<h2>Audit log</h2>
+<form method="get" action="/audit" class="row">
+  <label style="color: var(--muted);">Level
+    <select name="level">
+      <option value="">all</option>
+      {{range .Levels}}
+      <option value="{{.}}" {{if eq . $.LevelFilter}}selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+  </label>
+  <label style="color: var(--muted);">Run id
+    <input type="text" name="run" value="{{.RunFilter}}" placeholder="(any)" class="mono" style="width: 220px;">
+  </label>
+  <button type="submit">Filter</button>
+  <a href="/audit" style="color: var(--muted);">reset</a>
+</form>
+
+{{if .Runs}}
+  {{range .Runs}}
+  <details {{if .HasError}}open{{end}} style="background: var(--panel); border-radius: 6px; margin-bottom: 12px; padding: 12px 16px;">
+    <summary style="cursor: pointer; display: flex; align-items: center; gap: 12px;">
+      <span class="mono" style="color: var(--muted);">{{.RunID}}</span>
+      <span style="color: var(--muted); font-size: 12px;">{{formatLocal .FirstTime}} → {{formatLocal .LastTime}}</span>
+      <span style="flex: 1;"></span>
+      <span class="badge badge-muted">{{.EventCount}} events</span>
+      {{if .HasError}}<span class="badge badge-red">error</span>{{end}}
+    </summary>
+    <table style="margin-top: 12px;">
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Level</th>
+          <th>Decision</th>
+          <th>Message</th>
+          <th>Slot</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Events}}
+        <tr>
+          <td class="mono" style="white-space: nowrap;">{{.Time.Format "15:04:05"}}</td>
+          <td>
+            {{if eq .Level "error"}}<span class="badge badge-red">{{.Level}}</span>
+            {{else if eq .Level "warn"}}<span class="badge badge-amber">{{.Level}}</span>
+            {{else}}<span class="badge badge-muted">{{.Level}}</span>{{end}}
+          </td>
+          <td class="mono">{{.Decision}}</td>
+          <td>
+            {{.Message}}
+            {{if .Metadata}}<details><summary style="color: var(--muted); font-size: 12px; cursor: pointer;">metadata</summary><pre class="mono">{{.Metadata}}</pre></details>{{end}}
+          </td>
+          <td class="mono">{{.SlotTime}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </details>
+  {{end}}
+{{else}}
+  <div class="empty">No audit events match this filter.</div>
+{{end}}
+{{end}}

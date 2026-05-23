@@ -1,0 +1,40 @@
+{{define "content"}}
+<div class="row">
+  <h2 style="margin: 0; flex: 1;">Upcoming bookings</h2>
+  <span style="color: var(--muted); font-size: 12px;" hx-get="/" hx-trigger="every 30s" hx-target="body" hx-swap="outerHTML">auto-refresh 30s · {{.Now.Format "15:04:05 MST"}}</span>
+</div>
+{{if .Rows}}
+<table>
+  <thead>
+    <tr>
+      <th>When (venue local)</th>
+      <th>Court</th>
+      <th>Duration</th>
+      <th>Price</th>
+      <th>Source</th>
+      <th>Cancel deadline</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Rows}}
+    <tr>
+      <td>{{formatLocal .StartLocal}}</td>
+      <td>{{.Court}}</td>
+      <td>{{.Duration}}m</td>
+      <td>{{formatPrice .Price}}</td>
+      <td><span class="badge badge-muted">{{.Source}}</span></td>
+      <td>
+        {{if not .CancelDeadline.IsZero}}
+          <span class="badge {{.UrgencyClass}}">{{.UrgencyLabel}}</span>
+        {{else}}
+          <span class="badge badge-muted">—</span>
+        {{end}}
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<div class="empty">No upcoming bookings.</div>
+{{end}}
+{{end}}

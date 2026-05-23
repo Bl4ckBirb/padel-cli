@@ -1,0 +1,25 @@
+services:
+  padel:
+    build:
+      context: .
+    image: padel-cli:latest
+    container_name: padel-dashboard
+    restart: unless-stopped
+    # Bind to 127.0.0.1 on the host so the dashboard is only reachable locally.
+    # Inside the container the server still listens on 0.0.0.0:8080 (set in CMD).
+    # Flip to "8080:8080" to expose on the LAN.
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Mount the same config dir the CLI uses so bookings.db and credentials.json
+    # are shared between host CLI runs and the dashboard.
+    volumes:
+      - ${PADEL_CONFIG_DIR:-${HOME}/.config/padel}:/home/padel/.config/padel
+    environment:
+      # Optional Telegram credentials forwarded from host env, if set there.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

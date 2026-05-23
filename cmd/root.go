@@ -52,6 +52,7 @@ func Execute() {
 	rootCmd.AddCommand(authCmd())
 	rootCmd.AddCommand(bookCmd())
 	rootCmd.AddCommand(autoBookCmd())
+	rootCmd.AddCommand(serveCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)

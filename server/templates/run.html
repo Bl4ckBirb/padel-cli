@@ -1,0 +1,61 @@
+{{define "content"}}
+<h2>Run a dry-run</h2>
+<p style="color: var(--muted);">
+  Spawns <code class="mono">{{.BinaryPath}} auto-book --config &lt;file&gt; --ignore-release-window</code>.
+  Output streams below as the run progresses. Only one run at a time.
+</p>
+
+<div class="row">
+  {{range .Configs}}
+  <form method="post" action="/run/start" hx-post="/run/start" hx-target="#run-status" hx-swap="innerHTML" style="display: inline;">
+    <input type="hidden" name="config" value="{{.}}">
+    <button type="submit">Dry-run {{.}}</button>
+  </form>
+  {{end}}
+  <span style="flex: 1;"></span>
+  {{if .Latest}}
+    <span class="badge badge-muted">latest: {{.Latest.ID}}</span>
+  {{end}}
+</div>
+
+<div id="run-status" style="margin: 12px 0; color: var(--muted);">
+  {{if .Latest}}
+    Last run: <span class="mono">{{.Latest.ID}}</span> ({{.Latest.Profile}})
+  {{else}}
+    No runs yet this session. Click a button above.
+  {{end}}
+</div>
+
+<h3 style="margin-top: 24px;">Output</h3>
+<pre id="run-output" class="mono stream"></pre>
+
+<script>
+(function() {
+  const out = document.getElementById('run-output');
+  function append(line) {
+    out.textContent += line + '\n';
+    out.scrollTop = out.scrollHeight;
+  }
+  function connect() {
+    const es = new EventSource('/run/stream');
+    es.onmessage = (ev) => append(ev.data);
+    es.addEventListener('done', () => {
+      append('— run finished —');
+      es.close();
+    });
+    es.onerror = () => {
+      // Will retry automatically per the EventSource spec until close().
+    };
+  }
+  // Open the stream on page load and re-open after a fresh "Started run" reply.
+  connect();
+  document.body.addEventListener('htmx:afterRequest', (ev) => {
+    if (ev.detail.requestConfig && ev.detail.requestConfig.path === '/run/start') {
+      out.textContent = '';
+      // Brief delay so the server has time to start the run + subscribe path is live.
+      setTimeout(connect, 100);
+    }
+  });
+})();
+</script>
+{{end}}

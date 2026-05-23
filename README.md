@@ -167,6 +167,34 @@ Every decision is written to `~/.config/padel/bookings.db` in the `auto_book_aud
 
 Playtomic's iOS app can create open matches that only charge each player their share, but the customer-match endpoints exposed to public bearer tokens only accept the `SINGLE_PAYER` shape — the full court is charged to the booking owner. Probes for `split_payment_parts`, `payment_plan: SPLIT`, multi-registration payloads, and direct `PATCH` on the match's `payment_type` all silently dropped the field or returned 500/403. The SPLIT mechanism appears to live in an internal endpoint not reachable with our token. Until that changes, the safest play is what's documented above: book privately, decide within 48h.
 
+## Dashboard
+
+`padel serve` runs a small web dashboard that reads the same `~/.config/padel/bookings.db` the CLI writes to. Three pages:
+
+- **Dashboard** (`/`) — upcoming bookings with the cancel deadline coloured by urgency (red <24h, amber <72h).
+- **Audit** (`/audit`) — every `auto_book_audit` event, grouped by run, filterable by run id and level.
+- **Run** (`/run`) — trigger a dry-run of either profile; live output streams via SSE.
+
+```bash
+# Standalone (host process, defaults to 127.0.0.1:8080)
+padel serve
+
+# LAN-accessible
+padel serve --bind 0.0.0.0 --port 8080
+```
+
+### Docker
+
+```bash
+docker compose up -d
+# Dashboard at http://127.0.0.1:8080
+# Compose mounts $HOME/.config/padel into the container so it sees the same DB
+# and credentials the host CLI uses. Override PADEL_CONFIG_DIR to mount a
+# different directory.
+```
+
+The container binds to 0.0.0.0:8080 internally but compose only publishes it on `127.0.0.1` on the host — flip the port mapping in `docker-compose.yml` to expose on your LAN.
+
 ## Indoor/Outdoor Filtering
 
 Default shows indoor courts only:
