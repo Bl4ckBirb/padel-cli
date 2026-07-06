@@ -37,8 +37,8 @@ func availabilityCmd() *cobra.Command {
 	var clubID string
 	var venueAlias string
 	var date string
+	var showIndoor bool
 	var showOutdoor bool
-	var showAll bool
 
 	cmd := &cobra.Command{
 		Use:   "availability",
@@ -53,8 +53,8 @@ func availabilityCmd() *cobra.Command {
 			if date == "" {
 				return fmt.Errorf("--date is required")
 			}
-			if showOutdoor && showAll {
-				return fmt.Errorf("use either --outdoor or --all, not both")
+			if showIndoor && showOutdoor {
+				return fmt.Errorf("use either --indoor or --outdoor, not both")
 			}
 
 			venueTimezone := ""
@@ -108,7 +108,7 @@ func availabilityCmd() *cobra.Command {
 			}
 
 			targetDate := target.Format("2006-01-02")
-			slots := flattenAvailabilityWithResources(availability, resourceInfo, targetDate, venueTimezone, showOutdoor, showAll)
+			slots := flattenAvailabilityWithResources(availability, resourceInfo, targetDate, venueTimezone, showIndoor, showOutdoor)
 
 			output := AvailabilityOutput{
 				ClubID:   clubID,
@@ -128,8 +128,8 @@ func availabilityCmd() *cobra.Command {
 	cmd.Flags().StringVar(&clubID, "club-id", "", "Club (tenant) ID")
 	cmd.Flags().StringVar(&venueAlias, "venue", "", "Saved venue alias")
 	cmd.Flags().StringVar(&date, "date", "", "Date (YYYY-MM-DD)")
+	cmd.Flags().BoolVar(&showIndoor, "indoor", false, "Show only indoor courts")
 	cmd.Flags().BoolVar(&showOutdoor, "outdoor", false, "Show only outdoor courts")
-	cmd.Flags().BoolVar(&showAll, "all", false, "Show all courts (indoor and outdoor)")
 	return cmd
 }
 
@@ -139,10 +139,10 @@ func flattenAvailability(resources []api.AvailabilityResource, resourceNames map
 	for id, name := range resourceNames {
 		resourceInfo[id] = api.Resource{ResourceID: id, Name: name}
 	}
-	return flattenAvailabilityWithResources(resources, resourceInfo, targetDate, venueTimezone, false, true)
+	return flattenAvailabilityWithResources(resources, resourceInfo, targetDate, venueTimezone, false, false)
 }
 
-func flattenAvailabilityWithResources(resources []api.AvailabilityResource, resourceInfo map[string]api.Resource, targetDate, venueTimezone string, showOutdoor, showAll bool) []AvailabilitySlot {
+func flattenAvailabilityWithResources(resources []api.AvailabilityResource, resourceInfo map[string]api.Resource, targetDate, venueTimezone string, showIndoor, showOutdoor bool) []AvailabilitySlot {
 	slots := []AvailabilitySlot{}
 	for _, resource := range resources {
 		resInfo, hasInfo := resourceInfo[resource.ResourceID]
@@ -157,14 +157,12 @@ func flattenAvailabilityWithResources(resources []api.AvailabilityResource, reso
 			isIndoor = resInfo.IsIndoor()
 		}
 
-		// Filter by indoor/outdoor
-		if !showAll {
-			if showOutdoor && isIndoor {
-				continue // skip indoor when showing outdoor only
-			}
-			if !showOutdoor && !isIndoor {
-				continue // skip outdoor when showing indoor only (default)
-			}
+		// Filter by indoor/outdoor. With neither flag set, show all courts.
+		if showIndoor && !isIndoor {
+			continue // skip outdoor when showing indoor only
+		}
+		if showOutdoor && isIndoor {
+			continue // skip indoor when showing outdoor only
 		}
 
 		for _, slot := range resource.Slots {

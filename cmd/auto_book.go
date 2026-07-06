@@ -630,7 +630,8 @@ func findAutoBookCandidate(ctx context.Context, cfg AutoBookConfig, tenant api.T
 	startMinutes, _ := parseClock(cfg.Booking.StartWindow.From)
 	endMinutes, _ := parseClock(cfg.Booking.StartWindow.To)
 	targetDateStr := targetDate.Format("2006-01-02")
-	slots := filterAvailabilityWithResources(availability, resourceInfo, startMinutes, endMinutes, true, targetDateStr, venueTZ, false, false)
+	// Indoor-only: the auto-book venue is an indoor club.
+	slots := filterAvailabilityWithResources(availability, resourceInfo, startMinutes, endMinutes, true, targetDateStr, venueTZ, true, false)
 	candidates := filterAutoBookCandidates(slots, cfg, targetDateStr, loc, calendarEvents, now)
 	if len(candidates) == 0 {
 		return nil, candidates, nil

@@ -38,8 +38,8 @@ func searchCmd() *cobra.Command {
 	var timeRange string
 	var weekend bool
 	var radius int
+	var showIndoor bool
 	var showOutdoor bool
-	var showAll bool
 
 	cmd := &cobra.Command{
 		Use:   "search",
@@ -48,8 +48,8 @@ func searchCmd() *cobra.Command {
 			if clubID != "" && venuesInput != "" {
 				return fmt.Errorf("use either --club-id or --venues, not both")
 			}
-			if showOutdoor && showAll {
-				return fmt.Errorf("use either --outdoor or --all, not both")
+			if showIndoor && showOutdoor {
+				return fmt.Errorf("use either --indoor or --outdoor, not both")
 			}
 			if clubID == "" && venuesInput == "" {
 				if location == "" {
@@ -88,112 +88,20 @@ func searchCmd() *cobra.Command {
 			}
 
 			ctx := context.Background()
-			var tenants []searchTenant
-			if clubID != "" {
-				tenant, err := client.GetTenant(ctx, clubID)
-				if err != nil {
-					return err
-				}
-				tenants = []searchTenant{{
-					Tenant:   tenant,
-					TimeZone: normalizeVenueTimezone(tenant.Address.TimeZone),
-				}}
-			} else if venuesInput != "" {
-				aliases := splitAliases(venuesInput)
-				if len(aliases) == 0 {
-					return fmt.Errorf("--venues must include at least one alias")
-				}
-				venues, err := lookupVenues(aliases)
-				if err != nil {
-					return err
-				}
-				for idx, venue := range venues {
-					tenant, err := client.GetTenant(ctx, venue.ID)
-					if err != nil {
-						return err
-					}
-					venueTimezone := venue.TimeZone
-					if venueTimezone == "" {
-						venueTimezone = tenant.Address.TimeZone
-					}
-					tenants = append(tenants, searchTenant{
-						Tenant:   tenant,
-						TimeZone: normalizeVenueTimezone(venueTimezone),
-					})
-					if idx < len(venues)-1 {
-						time.Sleep(rateLimitDelay)
-					}
-				}
-			} else {
-				lat, lon, err := resolveLocation(ctx, location)
-				if err != nil {
-					return err
-				}
-				rawTenants, err := client.GetTenants(ctx, lat, lon, radius)
-				if err != nil {
-					return err
-				}
-				for _, tenant := range rawTenants {
-					tenants = append(tenants, searchTenant{
-						Tenant:   tenant,
-						TimeZone: normalizeVenueTimezone(tenant.Address.TimeZone),
-					})
-				}
-			}
-
-			sort.Slice(tenants, func(i, j int) bool {
-				return tenants[i].Tenant.TenantName < tenants[j].Tenant.TenantName
+			results, err := fetchMatchingSlots(ctx, slotQuery{
+				clubID:       clubID,
+				venuesInput:  venuesInput,
+				location:     location,
+				radius:       radius,
+				dateInputs:   dateInputs,
+				startMinutes: startMinutes,
+				endMinutes:   endMinutes,
+				hasTimeRange: hasTimeRange,
+				showIndoor:   showIndoor,
+				showOutdoor:  showOutdoor,
 			})
-
-			results := make([]SearchResult, 0, len(dateInputs))
-			for _, dateInput := range dateInputs {
-
-				clubResults := make([]SearchClubResult, 0, len(tenants))
-				for idx, tenantInfo := range tenants {
-					location := venueLocation(tenantInfo.TimeZone)
-					target, err := parseDateInputInLocation(dateInput, location)
-					if err != nil {
-						return err
-					}
-					startLocal := time.Date(target.Year(), target.Month(), target.Day(), 0, 0, 0, 0, location)
-					endLocal := time.Date(target.Year(), target.Month(), target.Day(), 23, 59, 59, 0, location)
-					startUTC := startLocal.UTC()
-					endUTC := endLocal.UTC()
-
-					availability, err := client.GetAvailability(ctx, tenantInfo.Tenant.TenantID, startUTC, endUTC)
-					if err != nil {
-						return err
-					}
-
-					// Fetch resources to get indoor/outdoor info
-					resources, err := client.GetResources(ctx, tenantInfo.Tenant.TenantID)
-					if err != nil {
-						// Fall back to tenant resources if GetResources fails
-						resources = tenantInfo.Tenant.Resources
-					}
-
-					resourceInfo := map[string]api.Resource{}
-					for _, resource := range resources {
-						resourceInfo[resource.ResourceID] = resource
-					}
-
-					targetDate := target.Format("2006-01-02")
-					slots := filterAvailabilityWithResources(availability, resourceInfo, startMinutes, endMinutes, hasTimeRange, targetDate, tenantInfo.TimeZone, showOutdoor, showAll)
-					clubResults = append(clubResults, SearchClubResult{
-						ClubID:   tenantInfo.Tenant.TenantID,
-						ClubName: tenantInfo.Tenant.TenantName,
-						Slots:    slots,
-					})
-
-					if idx < len(tenants)-1 {
-						time.Sleep(rateLimitDelay)
-					}
-				}
-
-				results = append(results, SearchResult{
-					Date:  dateInput,
-					Clubs: clubResults,
-				})
+			if err != nil {
+				return err
 			}
 
 			if outputJSON {
@@ -211,9 +119,139 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&timeRange, "time", "", "Time range (HH:MM-HH:MM)")
 	cmd.Flags().BoolVar(&weekend, "weekend", false, "Search the next Saturday and Sunday")
 	cmd.Flags().IntVar(&radius, "radius", 50000, "Search radius in meters")
+	cmd.Flags().BoolVar(&showIndoor, "indoor", false, "Show only indoor courts")
 	cmd.Flags().BoolVar(&showOutdoor, "outdoor", false, "Show only outdoor courts")
-	cmd.Flags().BoolVar(&showAll, "all", false, "Show all courts (indoor and outdoor)")
 	return cmd
+}
+
+// slotQuery describes a targeted availability lookup shared by `search` and
+// `watch`. Exactly one of clubID/venuesInput/location selects the tenants.
+type slotQuery struct {
+	clubID       string
+	venuesInput  string
+	location     string
+	radius       int
+	dateInputs   []string
+	startMinutes int
+	endMinutes   int
+	hasTimeRange bool
+	showIndoor   bool
+	showOutdoor  bool
+}
+
+// fetchMatchingSlots resolves the target tenants, queries availability for each
+// requested date, and returns the filtered slots per club. Extracted from
+// searchCmd so the watch loop can reuse the exact same lookup path.
+func fetchMatchingSlots(ctx context.Context, q slotQuery) ([]SearchResult, error) {
+	var tenants []searchTenant
+	if q.clubID != "" {
+		tenant, err := client.GetTenant(ctx, q.clubID)
+		if err != nil {
+			return nil, err
+		}
+		tenants = []searchTenant{{
+			Tenant:   tenant,
+			TimeZone: normalizeVenueTimezone(tenant.Address.TimeZone),
+		}}
+	} else if q.venuesInput != "" {
+		aliases := splitAliases(q.venuesInput)
+		if len(aliases) == 0 {
+			return nil, fmt.Errorf("--venues must include at least one alias")
+		}
+		venues, err := lookupVenues(aliases)
+		if err != nil {
+			return nil, err
+		}
+		for idx, venue := range venues {
+			tenant, err := client.GetTenant(ctx, venue.ID)
+			if err != nil {
+				return nil, err
+			}
+			venueTimezone := venue.TimeZone
+			if venueTimezone == "" {
+				venueTimezone = tenant.Address.TimeZone
+			}
+			tenants = append(tenants, searchTenant{
+				Tenant:   tenant,
+				TimeZone: normalizeVenueTimezone(venueTimezone),
+			})
+			if idx < len(venues)-1 {
+				time.Sleep(rateLimitDelay)
+			}
+		}
+	} else {
+		lat, lon, err := resolveLocation(ctx, q.location)
+		if err != nil {
+			return nil, err
+		}
+		rawTenants, err := client.GetTenants(ctx, lat, lon, q.radius)
+		if err != nil {
+			return nil, err
+		}
+		for _, tenant := range rawTenants {
+			tenants = append(tenants, searchTenant{
+				Tenant:   tenant,
+				TimeZone: normalizeVenueTimezone(tenant.Address.TimeZone),
+			})
+		}
+	}
+
+	sort.Slice(tenants, func(i, j int) bool {
+		return tenants[i].Tenant.TenantName < tenants[j].Tenant.TenantName
+	})
+
+	results := make([]SearchResult, 0, len(q.dateInputs))
+	for _, dateInput := range q.dateInputs {
+
+		clubResults := make([]SearchClubResult, 0, len(tenants))
+		for idx, tenantInfo := range tenants {
+			location := venueLocation(tenantInfo.TimeZone)
+			target, err := parseDateInputInLocation(dateInput, location)
+			if err != nil {
+				return nil, err
+			}
+			startLocal := time.Date(target.Year(), target.Month(), target.Day(), 0, 0, 0, 0, location)
+			endLocal := time.Date(target.Year(), target.Month(), target.Day(), 23, 59, 59, 0, location)
+			startUTC := startLocal.UTC()
+			endUTC := endLocal.UTC()
+
+			availability, err := client.GetAvailability(ctx, tenantInfo.Tenant.TenantID, startUTC, endUTC)
+			if err != nil {
+				return nil, err
+			}
+
+			// Fetch resources to get indoor/outdoor info
+			resources, err := client.GetResources(ctx, tenantInfo.Tenant.TenantID)
+			if err != nil {
+				// Fall back to tenant resources if GetResources fails
+				resources = tenantInfo.Tenant.Resources
+			}
+
+			resourceInfo := map[string]api.Resource{}
+			for _, resource := range resources {
+				resourceInfo[resource.ResourceID] = resource
+			}
+
+			targetDate := target.Format("2006-01-02")
+			slots := filterAvailabilityWithResources(availability, resourceInfo, q.startMinutes, q.endMinutes, q.hasTimeRange, targetDate, tenantInfo.TimeZone, q.showIndoor, q.showOutdoor)
+			clubResults = append(clubResults, SearchClubResult{
+				ClubID:   tenantInfo.Tenant.TenantID,
+				ClubName: tenantInfo.Tenant.TenantName,
+				Slots:    slots,
+			})
+
+			if idx < len(tenants)-1 {
+				time.Sleep(rateLimitDelay)
+			}
+		}
+
+		results = append(results, SearchResult{
+			Date:  dateInput,
+			Clubs: clubResults,
+		})
+	}
+
+	return results, nil
 }
 
 func splitAliases(input string) []string {
@@ -235,10 +273,10 @@ func filterAvailability(resources []api.AvailabilityResource, resourceNames map[
 	for id, name := range resourceNames {
 		resourceInfo[id] = api.Resource{ResourceID: id, Name: name}
 	}
-	return filterAvailabilityWithResources(resources, resourceInfo, startMinutes, endMinutes, hasTimeRange, targetDate, venueTimezone, false, true)
+	return filterAvailabilityWithResources(resources, resourceInfo, startMinutes, endMinutes, hasTimeRange, targetDate, venueTimezone, false, false)
 }
 
-func filterAvailabilityWithResources(resources []api.AvailabilityResource, resourceInfo map[string]api.Resource, startMinutes, endMinutes int, hasTimeRange bool, targetDate, venueTimezone string, showOutdoor, showAll bool) []AvailabilitySlot {
+func filterAvailabilityWithResources(resources []api.AvailabilityResource, resourceInfo map[string]api.Resource, startMinutes, endMinutes int, hasTimeRange bool, targetDate, venueTimezone string, showIndoor, showOutdoor bool) []AvailabilitySlot {
 	slots := []AvailabilitySlot{}
 	for _, resource := range resources {
 		resInfo, hasInfo := resourceInfo[resource.ResourceID]
@@ -253,14 +291,12 @@ func filterAvailabilityWithResources(resources []api.AvailabilityResource, resou
 			isIndoor = resInfo.IsIndoor()
 		}
 
-		// Filter by indoor/outdoor
-		if !showAll {
-			if showOutdoor && isIndoor {
-				continue
-			}
-			if !showOutdoor && !isIndoor {
-				continue
-			}
+		// Filter by indoor/outdoor. With neither flag set, show all courts.
+		if showIndoor && !isIndoor {
+			continue
+		}
+		if showOutdoor && isIndoor {
+			continue
 		}
 
 		for _, slot := range resource.Slots {

@@ -88,6 +88,43 @@ padel auth status
 padel book --venue myclub --date 2025-01-05 --time 10:30 --duration 90
 ```
 
+## Watch for Openings (Telegram alerts)
+
+`padel watch` polls a venue/date/time window and alerts you whenever a slot opens up — for example when someone cancels. It is **notify-only**: it never books and never spends money. Targeting mirrors `padel search`.
+
+```bash
+# Watch a saved venue's weekday evening every 60s; alert on Telegram
+padel watch --venues myclub --date 2026-06-20 --time 18:00-20:00 --interval 60s
+
+# Watch several days at once
+padel watch --venues myclub --date 2026-06-20,2026-06-21 --time 18:00-20:00
+
+# Or watch by location / club id, only 90-minute slots
+padel watch --location "Berlin" --date 2026-06-20 --time 18:00-20:00 --duration 90
+
+# One-shot mode for Windows Task Scheduler / cron (persists state between runs)
+padel watch --venues myclub --date 2026-06-20 --time 18:00-20:00 --once
+```
+
+The built-in loop runs until you press Ctrl-C. Each poll only alerts on slots it hasn't alerted on before; if a slot disappears and later reappears, it alerts again. In `--once` mode the alerted-slot set is persisted to `watch-state.json` in the config dir (`~/.config/padel`, or `PADEL_CONFIG_DIR`) so a scheduler doesn't re-alert the same slot.
+
+Key flags: `--interval` (base loop cadence, default `3m`, actual cadence varies ±20% to avoid a robotic fixed heartbeat), `--once`, `--duration` (filter by slot length), `--indoor` / `--outdoor` (default is all courts), `--weekend`, `--telegram` (default on).
+
+### Telegram setup
+
+1. In Telegram, message **@BotFather** → `/newbot` → copy the **bot token**.
+2. Message your new bot once (say "hi"), then open `https://api.telegram.org/bot<TOKEN>/getUpdates` and read `result[].message.chat.id` — that's your **chat id**.
+3. Save both to `~/.config/padel/telegram.json` (created automatically if the config dir exists):
+
+```json
+{
+  "bot_token": "123456:ABC...",
+  "chat_id": "987654321"
+}
+```
+
+The file is shared by `padel watch` and `padel auto-book` (when `notifications.telegram.enabled: true` in the auto-book YAML). If the file is absent or incomplete, `watch` falls back to printing alerts to the console instead of failing. Pass `--telegram=false` to force console-only.
+
 ## Autonomous Booking
 
 `padel auto-book` is a strict personal automation for Indoor Padel Australia Alexandria. It computes the target date as the current date in `Australia/Sydney` plus 14 days, runs only for one of two configured profiles, and only books in the 18:30–18:35 Sydney release window.
@@ -208,17 +245,17 @@ The container binds to 0.0.0.0:8080 internally but compose only publishes it on 
 
 ## Indoor/Outdoor Filtering
 
-Default shows indoor courts only:
+Default shows **all** courts (like the Playtomic app). Narrow with `--indoor` or `--outdoor`. Note: Playtomic types courts as `indoor`, `outdoor`, or `roofed`; only `indoor` counts as indoor, so a roofed/covered court (e.g. a "Kalthalle") is grouped with `--outdoor`.
 
 ```bash
-# Indoor only (default)
+# All courts (default)
 padel search --venues myclub --date 2025-01-05
 
-# Outdoor only
-padel search --venues myclub --date 2025-01-05 --outdoor
+# Indoor only
+padel search --venues myclub --date 2025-01-05 --indoor
 
-# All courts
-padel search --venues myclub --date 2025-01-05 --all
+# Outdoor only (includes roofed/covered courts)
+padel search --venues myclub --date 2025-01-05 --outdoor
 ```
 
 ## Output Formats

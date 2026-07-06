@@ -47,6 +47,7 @@ func Execute() {
 	rootCmd.AddCommand(clubsCmd())
 	rootCmd.AddCommand(availabilityCmd())
 	rootCmd.AddCommand(searchCmd())
+	rootCmd.AddCommand(watchCmd())
 	rootCmd.AddCommand(venuesCmd())
 	rootCmd.AddCommand(bookingsCmd())
 	rootCmd.AddCommand(authCmd())

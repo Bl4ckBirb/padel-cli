@@ -15,14 +15,33 @@ services:
     volumes:
       - ${PADEL_CONFIG_DIR:-${HOME}/.config/padel}:/home/padel/.config/padel
     environment:
-      # Display timezone for the dashboard. Defaults to Sydney since that's
-      # the only venue auto-book targets; override if you move the bot.
-      TZ: ${PADEL_TZ:-Australia/Sydney}
-      # Optional Telegram credentials forwarded from host env, if set there.
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TZ: ${PADEL_TZ:-Europe/Berlin}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+  watch:
+    image: padel-cli:latest
+    container_name: padel-watch
+    restart: unless-stopped
+    volumes:
+      - ${PADEL_CONFIG_DIR:-${HOME}/.config/padel}:/home/padel/.config/padel
+    environment:
+      TZ: ${PADEL_TZ:-Europe/Berlin}
+    # All watch parameters come from .env so you don't need to edit this file.
+    # Required: WATCH_VENUES, WATCH_DATE, WATCH_TIME
+    # Optional: WATCH_DURATION (default 90), WATCH_INTERVAL (default 3m)
+    command:
+      - watch
+      - --venues
+      - ${WATCH_VENUES:?set WATCH_VENUES in .env}
+      - --date
+      - ${WATCH_DATE:?set WATCH_DATE in .env}
+      - --time
+      - ${WATCH_TIME:?set WATCH_TIME in .env}
+      - --duration
+      - "${WATCH_DURATION:-90}"
+      - --interval
+      - "${WATCH_INTERVAL:-3m}"
