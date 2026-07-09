@@ -124,8 +124,8 @@ func bookingsListCmd() *cobra.Command {
 	}
 
 	cmd.Flags().BoolVar(&past, "past", false, "List past bookings")
-	cmd.Flags().StringVar(&from, "from", "", "Start date (YYYY-MM-DD)")
-	cmd.Flags().StringVar(&to, "to", "", "End date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&from, "from", "", "Start date (DD-MM-YYYY)")
+	cmd.Flags().StringVar(&to, "to", "", "End date (DD-MM-YYYY)")
 	return cmd
 }
 
@@ -331,7 +331,7 @@ func bookingsAddCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&venueAlias, "venue", "", "Saved venue alias")
-	cmd.Flags().StringVar(&date, "date", "", "Date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&date, "date", "", "Date (DD-MM-YYYY)")
 	cmd.Flags().StringVar(&timeValue, "time", "", "Time (HH:MM)")
 	cmd.Flags().StringVar(&court, "court", "", "Court name")
 	cmd.Flags().Float64Var(&price, "price", 0, "Price")
@@ -531,7 +531,7 @@ func bookingsSyncCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&from, "from", "", "Only sync bookings on/after this date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&from, "from", "", "Only sync bookings on/after this date (DD-MM-YYYY)")
 	cmd.Flags().IntVar(&size, "size", 50, "Number of matches to fetch")
 	return cmd
 }

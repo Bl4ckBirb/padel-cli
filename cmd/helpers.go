@@ -39,6 +39,12 @@ func parseCoordinate(input string) (float64, float64, bool) {
 	return lat, lon, true
 }
 
+// userDateLayout is the day-month-year format users type on the command line,
+// e.g. 22-06-2026. Internally dates are still carried as ISO YYYY-MM-DD (the
+// Playtomic API and the SQLite store both depend on that), so only the input
+// parse layer and the display layer use these user-facing layouts.
+const userDateLayout = "02-01-2006"
+
 func parseDateInput(input string) (time.Time, error) {
 	if input == "" {
 		return time.Time{}, fmt.Errorf("date is required")
@@ -51,11 +57,44 @@ func parseDateInput(input string) (time.Time, error) {
 		t := now.AddDate(0, 0, 1)
 		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location()), nil
 	}
-	parsed, err := time.Parse("2006-01-02", input)
+	parsed, err := time.Parse(userDateLayout, input)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid date %q (expected YYYY-MM-DD)", input)
+		return time.Time{}, fmt.Errorf("invalid date %q (expected DD-MM-YYYY)", input)
 	}
 	return parsed, nil
+}
+
+// formatDisplayDate turns an internal ISO date (2006-01-02) into the friendly
+// human-facing form "Weekday DD.MM." (e.g. "Thursday 09.07."), dropping the
+// year. On any parse failure it returns the input unchanged so display never
+// swallows an unexpected value.
+func formatDisplayDate(isoDate string) string {
+	t, err := time.Parse("2006-01-02", isoDate)
+	if err != nil {
+		return isoDate
+	}
+	return t.Weekday().String() + " " + t.Format("02.01.")
+}
+
+// formatEURPerPerson renders a Playtomic court price as the per-person share the
+// user actually pays. rawPrice is the full-court string from the API (e.g.
+// "44 EUR"). discount is a flat euro amount taken off the court total first (a
+// member discount that never appears in the public feed). The remainder is split
+// four ways; with wellpass another 9 EUR is subtracted per person. The result is
+// clamped at 0 and formatted German-style (comma decimal), e.g. "11,00 €".
+// Returns "" when rawPrice is blank.
+func formatEURPerPerson(rawPrice string, discount float64, wellpass bool) string {
+	if strings.TrimSpace(rawPrice) == "" {
+		return ""
+	}
+	perPerson := (parsePriceAmount(rawPrice) - discount) / 4
+	if wellpass {
+		perPerson -= 9
+	}
+	if perPerson < 0 {
+		perPerson = 0
+	}
+	return strings.Replace(fmt.Sprintf("%.2f", perPerson), ".", ",", 1) + " €"
 }
 
 func nextWeekendDates(now time.Time) []time.Time {
@@ -251,9 +290,9 @@ func parseDateInputInLocation(input string, loc *time.Location) (time.Time, erro
 		t := now.AddDate(0, 0, 1)
 		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc), nil
 	}
-	parsed, err := time.ParseInLocation("2006-01-02", input, loc)
+	parsed, err := time.ParseInLocation(userDateLayout, input, loc)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid date %q (expected YYYY-MM-DD)", input)
+		return time.Time{}, fmt.Errorf("invalid date %q (expected DD-MM-YYYY)", input)
 	}
 	return parsed, nil
 }

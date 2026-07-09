@@ -16,6 +16,10 @@ type SearchClubResult struct {
 	ClubID   string             `json:"club_id"`
 	ClubName string             `json:"club_name"`
 	Slots    []AvailabilitySlot `json:"slots"`
+	// Discount is the venue's flat per-booking member discount (euros off the
+	// court total), carried through so the watch alert can price per person. Only
+	// set when the target is a saved venue; 0 for club-id/location targeting.
+	Discount float64 `json:"-"`
 }
 
 type SearchResult struct {
@@ -26,6 +30,7 @@ type SearchResult struct {
 type searchTenant struct {
 	Tenant   api.Tenant
 	TimeZone string
+	Discount float64
 }
 
 const rateLimitDelay = 150 * time.Millisecond
@@ -115,7 +120,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&location, "location", "", "Location name or lat,lon")
 	cmd.Flags().StringVar(&clubID, "club-id", "", "Club (tenant) ID")
 	cmd.Flags().StringVar(&venuesInput, "venues", "", "Comma-separated saved venue aliases")
-	cmd.Flags().StringVar(&date, "date", "", "Date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&date, "date", "", "Date (DD-MM-YYYY)")
 	cmd.Flags().StringVar(&timeRange, "time", "", "Time range (HH:MM-HH:MM)")
 	cmd.Flags().BoolVar(&weekend, "weekend", false, "Search the next Saturday and Sunday")
 	cmd.Flags().IntVar(&radius, "radius", 50000, "Search radius in meters")
@@ -174,6 +179,7 @@ func fetchMatchingSlots(ctx context.Context, q slotQuery) ([]SearchResult, error
 			tenants = append(tenants, searchTenant{
 				Tenant:   tenant,
 				TimeZone: normalizeVenueTimezone(venueTimezone),
+				Discount: venue.PriceDiscount,
 			})
 			if idx < len(venues)-1 {
 				time.Sleep(rateLimitDelay)
@@ -206,7 +212,9 @@ func fetchMatchingSlots(ctx context.Context, q slotQuery) ([]SearchResult, error
 		clubResults := make([]SearchClubResult, 0, len(tenants))
 		for idx, tenantInfo := range tenants {
 			location := venueLocation(tenantInfo.TimeZone)
-			target, err := parseDateInputInLocation(dateInput, location)
+			// dateInput is the internal ISO canonical (already resolved from the
+			// user's DD-MM-YYYY input), so parse it as ISO, not user format.
+			target, err := time.ParseInLocation("2006-01-02", dateInput, location)
 			if err != nil {
 				return nil, err
 			}
@@ -238,6 +246,7 @@ func fetchMatchingSlots(ctx context.Context, q slotQuery) ([]SearchResult, error
 				ClubID:   tenantInfo.Tenant.TenantID,
 				ClubName: tenantInfo.Tenant.TenantName,
 				Slots:    slots,
+				Discount: tenantInfo.Discount,
 			})
 
 			if idx < len(tenants)-1 {
@@ -346,7 +355,7 @@ func filterAvailabilityWithResources(resources []api.AvailabilityResource, resou
 func renderSearch(results []SearchResult) error {
 	for _, result := range results {
 		if len(results) > 1 {
-			fmt.Printf("%s\n", result.Date)
+			fmt.Printf("%s\n", formatDisplayDate(result.Date))
 		}
 
 		if outputCompact {

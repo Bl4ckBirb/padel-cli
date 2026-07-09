@@ -189,7 +189,7 @@ func bookCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&venueAlias, "venue", "", "Saved venue alias")
-	cmd.Flags().StringVar(&date, "date", "", "Date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&date, "date", "", "Date (DD-MM-YYYY)")
 	cmd.Flags().StringVar(&timeValue, "time", "", "Time (HH:MM)")
 	cmd.Flags().IntVar(&duration, "duration", 90, "Duration in minutes")
 	cmd.Flags().StringVar(&court, "court", "", "Court name")

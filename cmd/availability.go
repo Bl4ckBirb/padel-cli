@@ -127,7 +127,7 @@ func availabilityCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&clubID, "club-id", "", "Club (tenant) ID")
 	cmd.Flags().StringVar(&venueAlias, "venue", "", "Saved venue alias")
-	cmd.Flags().StringVar(&date, "date", "", "Date (YYYY-MM-DD)")
+	cmd.Flags().StringVar(&date, "date", "", "Date (DD-MM-YYYY)")
 	cmd.Flags().BoolVar(&showIndoor, "indoor", false, "Show only indoor courts")
 	cmd.Flags().BoolVar(&showOutdoor, "outdoor", false, "Show only outdoor courts")
 	return cmd
@@ -202,11 +202,11 @@ func flattenAvailabilityWithResources(resources []api.AvailabilityResource, reso
 
 func renderAvailability(output AvailabilityOutput) error {
 	if len(output.Slots) == 0 {
-		fmt.Printf("%s (%s)\nDate: %s\nNo available slots.\n", output.ClubName, output.ClubID, output.Date)
+		fmt.Printf("%s (%s)\nDate: %s\nNo available slots.\n", output.ClubName, output.ClubID, formatDisplayDate(output.Date))
 		return nil
 	}
 
-	fmt.Printf("%s (%s)\nDate: %s\n", output.ClubName, output.ClubID, output.Date)
+	fmt.Printf("%s (%s)\nDate: %s\n", output.ClubName, output.ClubID, formatDisplayDate(output.Date))
 
 	if outputCompact {
 		byCourt := map[string][]AvailabilitySlot{}

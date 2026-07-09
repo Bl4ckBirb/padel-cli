@@ -14,6 +14,11 @@ type Venue struct {
 	Name     string `json:"name"`
 	Indoor   bool   `json:"indoor"`
 	TimeZone string `json:"timezone"`
+	// PriceDiscount is a flat euro amount subtracted from the court total before
+	// the per-person split. Playtomic's public feed returns the rack price; a
+	// member account sees a fixed discount per booking that never appears in the
+	// feed, so it is calibrated per venue here. Zero means no discount.
+	PriceDiscount float64 `json:"price_discount,omitempty"`
 }
 
 type VenuesFile struct {

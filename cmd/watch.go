@@ -34,6 +34,7 @@ func watchCmd() *cobra.Command {
 	var interval time.Duration
 	var once bool
 	var telegramEnabled bool
+	var wellpass bool
 
 	cmd := &cobra.Command{
 		Use:   "watch",
@@ -45,8 +46,11 @@ Targeting mirrors 'padel search': pick venues with --venues, --club-id, or
 --location, then narrow with --date, --time, --duration and the indoor/outdoor
 flags. By default it loops on --interval; use --once for Task Scheduler/cron.
 
-Telegram credentials are read from the TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
-environment variables. If they are missing, alerts are printed to the console.`,
+Alert prices are shown per person (court price / 4), using each saved venue's
+--discount, and with --wellpass a further 9 € is subtracted per person.
+
+Telegram credentials are read from ~/.config/padel/telegram.json. If it is
+missing or incomplete, alerts are printed to the console instead.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if clubID != "" && venuesInput != "" {
 				return fmt.Errorf("use either --club-id or --venues, not both")
@@ -141,7 +145,7 @@ environment variables. If they are missing, alerts are printed to the console.`,
 					fmt.Printf("[%s] no new slots\n", time.Now().Format("15:04:05"))
 					return nil
 				}
-				msg := formatWatchAlert(fresh)
+				msg := formatWatchAlert(fresh, wellpass)
 				fmt.Println(msg)
 				if err := notifier.Notify(ctx, msg); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: notification failed: %v\n", err)
@@ -157,6 +161,14 @@ environment variables. If they are missing, alerts are printed to the console.`,
 			}
 
 			fmt.Printf("Watching with ~%s interval (+/-20%% jitter) — Ctrl-C to stop.\n", interval)
+			// Announce the watch on startup (loop mode only — --once would spam a
+			// scheduler). Notify is noop-safe, so this only sends when Telegram is
+			// configured; it always prints to the console.
+			startMsg := formatWatchStartMessage(query, timeRange, duration, interval)
+			fmt.Println(startMsg)
+			if err := notifier.Notify(ctx, startMsg); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: start notification failed: %v\n", err)
+			}
 			if err := poll(); err != nil {
 				return err
 			}
@@ -181,7 +193,7 @@ environment variables. If they are missing, alerts are printed to the console.`,
 	cmd.Flags().StringVar(&location, "location", "", "Location name or lat,lon")
 	cmd.Flags().StringVar(&clubID, "club-id", "", "Club (tenant) ID")
 	cmd.Flags().StringVar(&venuesInput, "venues", "", "Comma-separated saved venue aliases")
-	cmd.Flags().StringVar(&date, "date", "", "Date(s) to watch (YYYY-MM-DD, comma-separated)")
+	cmd.Flags().StringVar(&date, "date", "", "Date(s) to watch (DD-MM-YYYY, comma-separated)")
 	cmd.Flags().StringVar(&timeRange, "time", "", "Time range (HH:MM-HH:MM)")
 	cmd.Flags().BoolVar(&weekend, "weekend", false, "Watch the next Saturday and Sunday")
 	cmd.Flags().IntVar(&radius, "radius", 50000, "Search radius in meters")
@@ -190,7 +202,8 @@ environment variables. If they are missing, alerts are printed to the console.`,
 	cmd.Flags().BoolVar(&showOutdoor, "outdoor", false, "Watch only outdoor courts")
 	cmd.Flags().DurationVar(&interval, "interval", 3*time.Minute, "Base polling interval for the built-in loop (actual cadence varies ±20%)")
 	cmd.Flags().BoolVar(&once, "once", false, "Poll once and exit (for Task Scheduler/cron)")
-	cmd.Flags().BoolVar(&telegramEnabled, "telegram", true, "Send alerts via Telegram (env TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID)")
+	cmd.Flags().BoolVar(&telegramEnabled, "telegram", true, "Send alerts via Telegram (credentials from ~/.config/padel/telegram.json)")
+	cmd.Flags().BoolVar(&wellpass, "wellpass", false, "Subtract 9 € from the per-person price (Wellpass subsidy)")
 	return cmd
 }
 
@@ -199,6 +212,7 @@ type watchSlot struct {
 	ClubID   string
 	ClubName string
 	Date     string
+	Discount float64 // venue member discount (euros off the court total)
 	Slot     AvailabilitySlot
 }
 
@@ -227,6 +241,7 @@ func collectNewSlots(results []SearchResult, seen map[string]struct{}, durationF
 					ClubID:   club.ClubID,
 					ClubName: club.ClubName,
 					Date:     result.Date,
+					Discount: club.Discount,
 					Slot:     slot,
 				})
 			}
@@ -241,7 +256,9 @@ func collectNewSlots(results []SearchResult, seen map[string]struct{}, durationF
 	return fresh
 }
 
-func formatWatchAlert(slots []watchSlot) string {
+func formatWatchAlert(slots []watchSlot, wellpass bool) string {
+	// Sort on the internal ISO date (lexically chronological); the display form
+	// is applied only when rendering each line.
 	sort.Slice(slots, func(i, j int) bool {
 		if slots[i].Date != slots[j].Date {
 			return slots[i].Date < slots[j].Date
@@ -258,14 +275,48 @@ func formatWatchAlert(slots []watchSlot) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "🎾 Padel slot opened (%d):\n", len(slots))
 	for _, ws := range slots {
-		fmt.Fprintf(&b, "• %s %s — %s (%s, %d min", ws.Date, ws.Slot.Time, ws.ClubName, ws.Slot.Court, ws.Slot.Duration)
-		if strings.TrimSpace(ws.Slot.Price) != "" {
-			fmt.Fprintf(&b, ", %s", ws.Slot.Price)
+		fmt.Fprintf(&b, "• %s %s — %s (%s, %d min", formatDisplayDate(ws.Date), ws.Slot.Time, ws.ClubName, ws.Slot.Court, ws.Slot.Duration)
+		if price := formatEURPerPerson(ws.Slot.Price, ws.Discount, wellpass); price != "" {
+			fmt.Fprintf(&b, ", %s p.P.", price)
 		}
 		b.WriteString(")\n")
 		fmt.Fprintf(&b, "  https://app.playtomic.io/clubs/%s\n", ws.ClubID)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatWatchStartMessage summarises the active watch parameters for the startup
+// announcement (console + Telegram).
+func formatWatchStartMessage(q slotQuery, timeRange string, duration int, interval time.Duration) string {
+	target := q.location
+	if q.venuesInput != "" {
+		target = q.venuesInput
+	} else if q.clubID != "" {
+		target = q.clubID
+	}
+
+	dates := make([]string, 0, len(q.dateInputs))
+	for _, d := range q.dateInputs {
+		dates = append(dates, formatDisplayDate(d))
+	}
+
+	window := timeRange
+	if window == "" {
+		window = "any"
+	}
+	dur := "any"
+	if duration > 0 {
+		dur = fmt.Sprintf("%d min", duration)
+	}
+
+	var b strings.Builder
+	b.WriteString("🔎 Watch started\n")
+	fmt.Fprintf(&b, "Venue: %s\n", target)
+	fmt.Fprintf(&b, "Dates: %s\n", strings.Join(dates, ", "))
+	fmt.Fprintf(&b, "Time: %s\n", window)
+	fmt.Fprintf(&b, "Duration: %s\n", dur)
+	fmt.Fprintf(&b, "Interval: ~%s", interval)
+	return b.String()
 }
 
 func watchStatePath() (string, error) {

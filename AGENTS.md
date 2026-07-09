@@ -78,7 +78,7 @@ How to obtain:
 ## Validation / smoke checks
 - `padel auth status` (verifies credentials)
 - `padel venues list` (verifies venues load)
-- `padel search --near "CITY_NAME" --date YYYY-MM-DD --time HH:MM-HH:MM`
+- `padel search --near "CITY_NAME" --date DD-MM-YYYY --time HH:MM-HH:MM`
 
 ## Notes
 - All values are mutable at runtime and live outside the Nix store.

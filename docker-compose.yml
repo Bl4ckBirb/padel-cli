@@ -31,17 +31,21 @@ services:
     environment:
       TZ: ${PADEL_TZ:-Europe/Berlin}
     # All watch parameters come from .env so you don't need to edit this file.
-    # Required: WATCH_VENUES, WATCH_DATE, WATCH_TIME
-    # Optional: WATCH_DURATION (default 90), WATCH_INTERVAL (default 3m)
+    # Required: WATCH_VENUES, WATCH_DATE (DD-MM-YYYY), WATCH_TIME
+    # Optional: WATCH_DURATION (default 90), WATCH_INTERVAL (default 3m),
+    #           WATCH_WELLPASS (default false — subtracts 9 € per person).
+    # The per-venue member discount is stored on the venue (venues add/update
+    # --discount), so it needs no env var here.
     command:
       - watch
       - --venues
       - ${WATCH_VENUES:?set WATCH_VENUES in .env}
       - --date
-      - ${WATCH_DATE:?set WATCH_DATE in .env}
+      - ${WATCH_DATE:?set WATCH_DATE in .env (DD-MM-YYYY)}
       - --time
       - ${WATCH_TIME:?set WATCH_TIME in .env}
       - --duration
       - "${WATCH_DURATION:-90}"
       - --interval
       - "${WATCH_INTERVAL:-3m}"
+      - --wellpass=${WATCH_WELLPASS:-false}

@@ -67,13 +67,43 @@ func TestFormatWatchAlert(t *testing.T) {
 	slots := []watchSlot{{
 		ClubID:   "c1",
 		ClubName: "My Club",
-		Date:     "2026-06-20",
+		Date:     "2026-06-20", // a Saturday
 		Slot:     AvailabilitySlot{Court: "Court 1", Time: "18:00", Duration: 90, Price: "20 EUR"},
 	}}
-	msg := formatWatchAlert(slots)
-	for _, want := range []string{"My Club", "Court 1", "18:00", "90 min", "20 EUR", "app.playtomic.io/clubs/c1"} {
+	msg := formatWatchAlert(slots, false)
+	// 20 EUR court / 4 = 5,00 € per person; date renders as weekday + no year.
+	for _, want := range []string{"My Club", "Court 1", "18:00", "90 min", "5,00 €", "Saturday 20.06.", "app.playtomic.io/clubs/c1"} {
 		if !contains(msg, want) {
 			t.Errorf("alert missing %q in:\n%s", want, msg)
+		}
+	}
+	if contains(msg, "20 EUR") {
+		t.Errorf("alert should show the per-person price, not the raw court price:\n%s", msg)
+	}
+}
+
+func TestFormatWatchAlertDiscountAndWellpass(t *testing.T) {
+	mk := func(discount float64, price string) []watchSlot {
+		return []watchSlot{{
+			ClubID: "c1", ClubName: "Club", Date: "2026-06-20", Discount: discount,
+			Slot: AvailabilitySlot{Court: "C1", Time: "18:00", Duration: 90, Price: price},
+		}}
+	}
+	cases := []struct {
+		name     string
+		discount float64
+		price    string
+		wellpass bool
+		want     string
+	}{
+		{"discount only", 12, "20 EUR", false, "2,00 €"},   // (20-12)/4
+		{"wellpass clamps to zero", 0, "20 EUR", true, "0,00 €"}, // 5 - 9 -> 0
+		{"wellpass positive", 0, "60 EUR", true, "6,00 €"},  // 15 - 9
+	}
+	for _, c := range cases {
+		msg := formatWatchAlert(mk(c.discount, c.price), c.wellpass)
+		if !contains(msg, c.want) {
+			t.Errorf("%s: want %q in:\n%s", c.name, c.want, msg)
 		}
 	}
 }

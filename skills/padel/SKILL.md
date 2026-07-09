@@ -44,7 +44,7 @@ Day is included! Use it in your response.
 
 ### Search availability
 ```bash
-padel search --venues blijdorp,capelle,airport --date YYYY-MM-DD --time 09:00-12:00
+padel search --venues blijdorp,capelle,airport --date DD-MM-YYYY --time 09:00-12:00
 ```
 
 ### Calculate next Saturday

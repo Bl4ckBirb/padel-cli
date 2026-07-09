@@ -28,11 +28,11 @@ packages to `PATH`, so no `skills.load.extraDirs` is needed.
 # List clubs near a location
 padel clubs --near "Madrid"
 
-# Check availability for a club on a date
-padel availability --club-id <id> --date 2025-01-05
+# Check availability for a club on a date (dates are DD-MM-YYYY)
+padel availability --club-id <id> --date 05-01-2025
 
 # Search for available courts
-padel search --location "Barcelona" --date 2025-01-05 --time 18:00-22:00
+padel search --location "Barcelona" --date 05-01-2025 --time 18:00-22:00
 
 # JSON output
 padel clubs --near "Madrid" --json
@@ -46,15 +46,23 @@ Save venues with aliases for quick access:
 # Add a venue
 padel venues add --id "<playtomic-id>" --alias myclub --name "My Club" --indoor --timezone "Europe/Madrid"
 
-# List saved venues
+# Set (or change) a member discount later, without re-adding the venue
+padel venues update --alias myclub --discount 12
+
+# List saved venues (shows the discount column)
 padel venues list
 
 # Use alias in commands
-padel availability --venue myclub --date 2025-01-05
+padel availability --venue myclub --date 05-01-2025
 
 # Search multiple venues
-padel search --venues myclub,otherclub --date 2025-01-05 --time 09:00-11:00
+padel search --venues myclub,otherclub --date 05-01-2025 --time 09:00-11:00
 ```
+
+`--discount` is a flat euro amount subtracted from the court total before the
+per-person split (see [Watch](#watch-for-openings-telegram-alerts)). Playtomic's
+public feed only returns the rack price; if your account gets a fixed member
+discount per booking it never appears in the feed, so you calibrate it once here.
 
 ## Booking History
 
@@ -66,7 +74,7 @@ padel bookings list
 padel bookings list --past
 
 # Add a booking manually
-padel bookings add --venue myclub --date 2025-01-04 --time 10:30 --court "Court 5" --price 42
+padel bookings add --venue myclub --date 04-01-2025 --time 10:30 --court "Court 5" --price 42
 
 # Sync from Playtomic account
 padel bookings sync
@@ -85,7 +93,7 @@ padel auth login --email you@example.com --password yourpass
 padel auth status
 
 # Book a court (requires auth)
-padel book --venue myclub --date 2025-01-05 --time 10:30 --duration 90
+padel book --venue myclub --date 05-01-2025 --time 10:30 --duration 90
 ```
 
 ## Watch for Openings (Telegram alerts)
@@ -94,21 +102,49 @@ padel book --venue myclub --date 2025-01-05 --time 10:30 --duration 90
 
 ```bash
 # Watch a saved venue's weekday evening every 60s; alert on Telegram
-padel watch --venues myclub --date 2026-06-20 --time 18:00-20:00 --interval 60s
+padel watch --venues myclub --date 22-06-2026 --time 18:00-20:00 --interval 60s
 
 # Watch several days at once
-padel watch --venues myclub --date 2026-06-20,2026-06-21 --time 18:00-20:00
+padel watch --venues myclub --date 22-06-2026,23-06-2026 --time 18:00-20:00
 
 # Or watch by location / club id, only 90-minute slots
-padel watch --location "Berlin" --date 2026-06-20 --time 18:00-20:00 --duration 90
+padel watch --location "Berlin" --date 22-06-2026 --time 18:00-20:00 --duration 90
+
+# Subtract the Wellpass subsidy (9 € per person) from displayed prices
+padel watch --venues myclub --date 22-06-2026 --time 18:00-20:00 --wellpass
 
 # One-shot mode for Windows Task Scheduler / cron (persists state between runs)
-padel watch --venues myclub --date 2026-06-20 --time 18:00-20:00 --once
+padel watch --venues myclub --date 22-06-2026 --time 18:00-20:00 --once
 ```
 
-The built-in loop runs until you press Ctrl-C. Each poll only alerts on slots it hasn't alerted on before; if a slot disappears and later reappears, it alerts again. In `--once` mode the alerted-slot set is persisted to `watch-state.json` in the config dir (`~/.config/padel`, or `PADEL_CONFIG_DIR`) so a scheduler doesn't re-alert the same slot.
+In loop mode, watch sends a one-time **"watch started"** summary (venue, dates, time window, duration) to Telegram and the console at startup, then runs until you press Ctrl-C. Each poll only alerts on slots it hasn't alerted on before; if a slot disappears and later reappears, it alerts again. In `--once` mode there is no start message, and the alerted-slot set is persisted to `watch-state.json` in the config dir (`~/.config/padel`, or `PADEL_CONFIG_DIR`) so a scheduler doesn't re-alert the same slot.
 
-Key flags: `--interval` (base loop cadence, default `3m`, actual cadence varies ±20% to avoid a robotic fixed heartbeat), `--once`, `--duration` (filter by slot length), `--indoor` / `--outdoor` (default is all courts), `--weekend`, `--telegram` (default on).
+**Prices** in alerts are shown **per person** in euros — the court price divided by 4, minus the venue's `--discount` (set via `venues add/update --discount`), and minus a further 9 € with `--wellpass` (clamped at 0). **Dates** in all output render as `Weekday DD.MM.` (e.g. `Thursday 09.07.`); input is `DD-MM-YYYY`.
+
+Key flags: `--interval` (base loop cadence, default `3m`, actual cadence varies ±20% to avoid a robotic fixed heartbeat), `--once`, `--duration` (filter by slot length), `--indoor` / `--outdoor` (default is all courts), `--weekend`, `--wellpass`, `--telegram` (default on).
+
+### Run watch in Docker
+
+The bundled `docker-compose.yml` defines a long-running `watch` service that builds a Linux binary (no Go needed on the host) and reads all parameters from a `.env` file next to the compose file:
+
+```env
+PADEL_TZ=Europe/Berlin
+WATCH_VENUES=myclub
+WATCH_DATE=22-06-2026
+WATCH_TIME=18:00-21:00
+WATCH_DURATION=90
+WATCH_INTERVAL=3m
+WATCH_WELLPASS=false
+```
+
+```bash
+docker compose up -d watch          # build + start
+docker compose logs -f watch        # follow alerts
+# After the watched date passes, edit WATCH_DATE in .env then:
+docker compose up -d --force-recreate watch
+```
+
+Both services mount the same `~/.config/padel`, so `venues.json` (with per-venue discounts) and `telegram.json` are shared with the host CLI.
 
 ### Telegram setup
 
@@ -249,13 +285,13 @@ Default shows **all** courts (like the Playtomic app). Narrow with `--indoor` or
 
 ```bash
 # All courts (default)
-padel search --venues myclub --date 2025-01-05
+padel search --venues myclub --date 05-01-2025
 
 # Indoor only
-padel search --venues myclub --date 2025-01-05 --indoor
+padel search --venues myclub --date 05-01-2025 --indoor
 
 # Outdoor only (includes roofed/covered courts)
-padel search --venues myclub --date 2025-01-05 --outdoor
+padel search --venues myclub --date 05-01-2025 --outdoor
 ```
 
 ## Output Formats
